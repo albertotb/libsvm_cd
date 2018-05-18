@@ -28,6 +28,7 @@ void exit_with_help()
    "-a solver_type : set the type of solver (default 0)\n"
    "  0 -- SMO\n"
    "  1 -- CD-SMO\n"
+   "  2 -- HYBRID\n"
    "-d degree : set degree in kernel function (default 3)\n"
    "-g gamma : set gamma in kernel function (default 1/num_features)\n"
    "-r coef0 : set coef0 in kernel function (default 0)\n"

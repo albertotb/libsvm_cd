@@ -24,7 +24,7 @@ struct svm_problem
 
 enum { C_SVC, NU_SVC, ONE_CLASS, EPSILON_SVR, NU_SVR };  /* svm_type */
 enum { LINEAR, POLY, RBF, SIGMOID, PRECOMPUTED }; /* kernel_type */
-enum { SMO, CD_SMO };
+enum { SMO, CD_SMO, HYBRID }; /* solver type */
 
 struct svm_parameter
 {
