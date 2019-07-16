@@ -139,6 +139,10 @@ options:
 	2 -- radial basis function: exp(-gamma*|u-v|^2)
 	3 -- sigmoid: tanh(gamma*u'*v + coef0)
 	4 -- precomputed kernel (kernel values in training_set_file)
+-a solver_type : set the type of solver (default 0)
+        0 -- SMO
+        1 -- CSMO
+        2 -- HYBRID
 -d degree : set degree in kernel function (default 3)
 -g gamma : set gamma in kernel function (default 1/num_features)
 -r coef0 : set coef0 in kernel function (default 0)
