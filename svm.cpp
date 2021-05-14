@@ -1018,7 +1018,12 @@ public:
 
    void Solve(int l, const QMatrix& Q, const double *p_, const schar *y_,
          double *alpha_, double Cp, double Cn, double eps,
-         SolutionInfo* si, int shrinking);
+         SolutionInfo* si, int shrinking, int type);
+
+protected:
+   int type;
+   int flag;
+
 private:
    double clip(double delta1, double *alpha, double *p, int l);
    int select_working_set(int &i, int &j);
@@ -1125,6 +1130,12 @@ int Solver_CD::select_working_set(int &out_i, int &out_j)
 
    out_i = Gmax_idx;
    out_j = Gmin_idx;
+
+   /* si es el método hibrido, todavia no hemos empezado con iteraciones de CD y
+    * pasamos el corte, cambiar */
+   if(type == HYBRID && flag == 0 && Gmax+Gmax2 < 1e-1)
+      flag = 1;
+
    return 0;
 }
 
@@ -1149,12 +1160,9 @@ double Solver_CD::clip(double rho1, double *alpha, double *h, int l)
    return min_value;
 }
 
-
-
-
 void Solver_CD::Solve(int l, const QMatrix& Q, const double *p_, const schar *y_,
          double *alpha_, double Cp, double Cn, double eps,
-         SolutionInfo* si, int shrinking)
+         SolutionInfo* si, int shrinking, int type)
 {
    this->l = l;
    this->Q = &Q;
@@ -1165,6 +1173,8 @@ void Solver_CD::Solve(int l, const QMatrix& Q, const double *p_, const schar *y_
    this->Cp = Cp;
    this->Cn = Cn;
    this->eps = eps;
+   this->type = type;
+   this->flag = 0;
    unshrink = false;
 
    info("CD SOLVER\n");
@@ -1255,6 +1265,8 @@ void Solver_CD::Solve(int l, const QMatrix& Q, const double *p_, const schar *y_
       }
 
       ++iter;
+
+
       //printf("i=%d, j=%d\n", i, j);
 
       // update alpha[i] and alpha[j], handle bounds carefully
@@ -1265,163 +1277,266 @@ void Solver_CD::Solve(int l, const QMatrix& Q, const double *p_, const schar *y_
       double C_i = get_C(i);
       double C_j = get_C(j);
 
-      //double old_alpha_i = alpha[i];
-      //double old_alpha_j = alpha[j];
-
-      // conjugate direction
-
-      double beta = 0;
-      double sigma = 0;
-      if (!clip_flag)
+      if (type == HYBRID && flag == 0)
       {
+         double old_alpha_i = alpha[i];
+         double old_alpha_j = alpha[j];
+
+         if(y[i]!=y[j])
+         {
+            double quad_coef = QD[i]+QD[j]+2*Q_i[j];
+            if (quad_coef <= 0)
+               quad_coef = TAU;
+            double delta = (-G[i]-G[j])/quad_coef;
+            double diff = alpha[i] - alpha[j];
+            alpha[i] += delta;
+            alpha[j] += delta;
+
+            if(diff > 0)
+            {
+               if(alpha[j] < 0)
+               {
+                  alpha[j] = 0;
+                  alpha[i] = diff;
+               }
+            }
+            else
+            {
+               if(alpha[i] < 0)
+               {
+                  alpha[i] = 0;
+                  alpha[j] = -diff;
+               }
+            }
+            if(diff > C_i - C_j)
+            {
+               if(alpha[i] > C_i)
+               {
+                  alpha[i] = C_i;
+                  alpha[j] = C_i - diff;
+               }
+            }
+            else
+            {
+               if(alpha[j] > C_j)
+               {
+                  alpha[j] = C_j;
+                  alpha[i] = C_j + diff;
+               }
+            }
+         }
+         else
+         {
+            double quad_coef = QD[i]+QD[j]-2*Q_i[j];
+            if (quad_coef <= 0)
+               quad_coef = TAU;
+            double delta = (G[i]-G[j])/quad_coef;
+            double sum = alpha[i] + alpha[j];
+            alpha[i] -= delta;
+            alpha[j] += delta;
+
+            if(sum > C_i)
+            {
+               if(alpha[i] > C_i)
+               {
+                  alpha[i] = C_i;
+                  alpha[j] = sum - C_i;
+               }
+            }
+            else
+            {
+               if(alpha[j] < 0)
+               {
+                  alpha[j] = 0;
+                  alpha[i] = sum;
+               }
+            }
+            if(sum > C_j)
+            {
+               if(alpha[j] > C_j)
+               {
+                  alpha[j] = C_j;
+                  alpha[i] = sum - C_j;
+               }
+            }
+            else
+            {
+               if(alpha[i] < 0)
+               {
+                  alpha[i] = 0;
+                  alpha[j] = sum;
+               }
+            }
+         }
+
+         // update G
+
+         double delta_alpha_i = alpha[i] - old_alpha_i;
+         double delta_alpha_j = alpha[j] - old_alpha_j;
+
+         for(int k=0;k<active_size;k++)
+         {
+            G[k] += Q_i[k]*delta_alpha_i + Q_j[k]*delta_alpha_j;
+         }
+
+      }
+      else // CD SMO
+      {
+         // conjugate direction
+
+         double beta = 0;
+         double sigma = 0;
+         if (!clip_flag)
+         {
+            if (y[i] == +1)
+            {
+               if (y[j] == +1)
+                  beta = H[i] - H[j];
+               else
+                  beta = H[i] + H[j];
+            } else {
+               if (y[j] == +1)
+                  beta = -H[i] - H[j];
+               else
+                  beta = -H[i] + H[j];
+            }
+
+            sigma = -beta/delta;
+         }
+
+         //double beta = y[i]*H[i] - y[j]*H[j];
+         //double sigma = -beta/delta;
+
+         if (!clip_flag)
+         {
+            for(int k=0; k<l; k++)
+            {
+               //H[k] = (double)(y[i])*Q_i[k]-(double)(y[j])*Q_j[k] + sigma*H[k];
+               if (y[i] == +1)
+               {
+                  if (y[j] == +1)
+                     H[k] = Q_i[k] - Q_j[k] + sigma*H[k];
+                  else
+                     H[k] = Q_i[k] + Q_j[k] + sigma*H[k];
+               } else {
+                  if (y[j] == +1)
+                     H[k] = -Q_i[k] - Q_j[k] + sigma*H[k];
+                  else
+                     H[k] = -Q_i[k] + Q_j[k] + sigma*H[k];
+               }
+
+               h[k] *= sigma;
+            }
+         } else {
+            for(int k=0; k<l; k++)
+            {
+               if (y[i] == +1)
+               {
+                  if (y[j] == +1)
+                     H[k] = Q_i[k] - Q_j[k];
+                  else
+                     H[k] = Q_i[k] + Q_j[k];
+               } else {
+                  if (y[j] == +1)
+                     H[k] = -Q_i[k] - Q_j[k];
+                  else
+                     H[k] = -Q_i[k] + Q_j[k];
+               }
+
+               h[k] = 0;
+            }
+
+            clip_flag = 0;
+
+         }
+
+         h[i] += y[i];
+         h[j] -= y[j];
+
+         //delta = y[i]*H[i] - y[j]*H[j];
+
          if (y[i] == +1)
          {
             if (y[j] == +1)
-               beta = H[i] - H[j];
+               delta = H[i] - H[j];
             else
-               beta = H[i] + H[j];
+               delta = H[i] + H[j];
          } else {
             if (y[j] == +1)
-               beta = -H[i] - H[j];
+               delta = -H[i] - H[j];
             else
-               beta = -H[i] + H[j];
+               delta = -H[i] + H[j];
          }
 
-         sigma = -beta/delta;
-      }
+         double gamma; //= y[j]*G[j] - y[i]*G[i];
 
-      //double beta = y[i]*H[i] - y[j]*H[j];
-      //double sigma = -beta/delta;
-
-      if (!clip_flag)
-      {
-         for(int k=0; k<l; k++)
+         if (y[i] == +1)
          {
-            //H[k] = (double)(y[i])*Q_i[k]-(double)(y[j])*Q_j[k] + sigma*H[k];
-            if (y[i] == +1)
-            {
-               if (y[j] == +1)
-                  H[k] = Q_i[k] - Q_j[k] + sigma*H[k];
-               else
-                  H[k] = Q_i[k] + Q_j[k] + sigma*H[k];
-            } else {
-               if (y[j] == +1)
-                  H[k] = -Q_i[k] - Q_j[k] + sigma*H[k];
-               else
-                  H[k] = -Q_i[k] + Q_j[k] + sigma*H[k];
-            }
-
-            h[k] *= sigma;
-         }
-      } else {
-         for(int k=0; k<l; k++)
-         {
-            if (y[i] == +1)
-            {
-               if (y[j] == +1)
-                  H[k] = Q_i[k] - Q_j[k];
-               else
-                  H[k] = Q_i[k] + Q_j[k];
-            } else {
-               if (y[j] == +1)
-                  H[k] = -Q_i[k] - Q_j[k];
-               else
-                  H[k] = -Q_i[k] + Q_j[k];
-            }
-
-            h[k] = 0;
-         }
-
-         clip_flag = 0;
-
-      }
-
-      h[i] += y[i];
-      h[j] -= y[j];
-
-      //delta = y[i]*H[i] - y[j]*H[j];
-
-      if (y[i] == +1)
-      {
-         if (y[j] == +1)
-            delta = H[i] - H[j];
-         else
-            delta = H[i] + H[j];
-      } else {
-         if (y[j] == +1)
-            delta = -H[i] - H[j];
-         else
-            delta = -H[i] + H[j];
-      }
-
-      double gamma; //= y[j]*G[j] - y[i]*G[i];
-
-      if (y[i] == +1)
-      {
-         if (y[j] == +1)
-            gamma = G[j] - G[i];
-         else
-            gamma = -G[j] - G[i];
-      } else {
-         if (y[j] == +1)
-            gamma = G[j] + G[i];
-         else
-            gamma = -G[j] + G[i];
-      }
-
-      double rho1 = gamma/delta;
-
-      /* clip rho1 if needed */
-      double rho = clip(rho1, alpha, h, l);
-
-      if (rho > 0)
-      {
-         for(int k=0; k<l; k++)
-         {
-            alpha[k] += rho * h[k];
-            //update_alpha_status(k);
-            G[k] += rho * H[k];
-         }
-
-         ++iter_cd;
-      }
-
-      if (rho < rho1)
-      {
-         // reset H, h and delta
-         //for(int k=0; k<l; k++)
-         //{
-         //   H[k] = 0;
-         //   h[k] = 0;
-         //}
-
-         //memset(H, 0, l*sizeof(double));
-         //memset(h, 0, l*sizeof(double));
-
-         delta = 1.;
-         clip_flag = 1;
-         ++iter_clip;
-
-         if (rho <= 0)
-         {
-            // standard SMO iteration
-            ++iter_smo;
-
-            if (y[i] == 1)
-               rho = min(rho1, C_i - alpha[i]);
+            if (y[j] == +1)
+               gamma = G[j] - G[i];
             else
-               rho = min(rho1, alpha[i]);
-
-            if (y[j] == 1)
-               rho = min(rho, alpha[j]);
+               gamma = -G[j] - G[i];
+         } else {
+            if (y[j] == +1)
+               gamma = G[j] + G[i];
             else
-               rho = min(rho, C_j - alpha[j]);
+               gamma = -G[j] + G[i];
+         }
 
-            alpha[i] += rho*y[i];
-            alpha[j] -= rho*y[j];
+         double rho1 = gamma/delta;
 
+         /* clip rho1 if needed */
+         double rho = clip(rho1, alpha, h, l);
+
+         if (rho > 0)
+         {
             for(int k=0; k<l; k++)
-               G[k] += rho*((double)(y[i])*Q_i[k] - (double)(y[j])*Q_j[k]);
+            {
+               alpha[k] += rho * h[k];
+               //update_alpha_status(k);
+               G[k] += rho * H[k];
+            }
+
+            ++iter_cd;
+         }
+
+         if (rho < rho1)
+         {
+            // reset H, h and delta
+            //for(int k=0; k<l; k++)
+            //{
+            //   H[k] = 0;
+            //   h[k] = 0;
+            //}
+
+            //memset(H, 0, l*sizeof(double));
+            //memset(h, 0, l*sizeof(double));
+
+            delta = 1.;
+            clip_flag = 1;
+            ++iter_clip;
+
+            if (rho <= 0)
+            {
+               // standard SMO iteration
+               ++iter_smo;
+
+               if (y[i] == 1)
+                  rho = min(rho1, C_i - alpha[i]);
+               else
+                  rho = min(rho1, alpha[i]);
+
+               if (y[j] == 1)
+                  rho = min(rho, alpha[j]);
+               else
+                  rho = min(rho, C_j - alpha[j]);
+
+               alpha[i] += rho*y[i];
+               alpha[j] -= rho*y[j];
+
+               for(int k=0; k<l; k++)
+                  G[k] += rho*((double)(y[i])*Q_i[k] - (double)(y[j])*Q_j[k]);
+            }
          }
       }
 
@@ -1979,7 +2094,8 @@ static void solve_c_svc(
    {
       Solver_CD s;
       s.Solve(l, SVC_Q(*prob,*param,y), minus_ones, y,
-         alpha, Cp, Cn, param->eps, si, param->shrinking);
+         alpha, Cp, Cn, param->eps, si, param->shrinking, 
+         param->solver_type);
    }
 
    double sum_alpha=0;
@@ -3576,7 +3692,8 @@ const char *svm_check_parameter(const svm_problem *prob, const svm_parameter *pa
 
    int solver_type = param->solver_type;
    if (solver_type != SMO &&
-       solver_type != CD_SMO)
+       solver_type != CD_SMO &&
+       solver_type != HYBRID)
        return "unknown solver type";
 
    if (svm_type != C_SVC &&
